@@ -12,17 +12,14 @@ clinical <- read_excel("/media/oncosys/Expansion/cellcycle/clinical_data_validat
 clinical <- clinical[, c("block name", "PFIcat_12")]
 clinical <- clinical[c(1:30),]
 
-data_ss <- read.csv('/media/oncosys/Expansion/cellcycle/cellcycle_phenotypes_RCNs.csv')
-data_ss <- read.csv('/media/oncosys/Expansion/cellcycle/cellcycle_phenotypes_TIM3.csv')
 
-data_ss[which(data_ss$phenotype == "CD8_new"), "phenotype"] <- "CD8Tcells"
-data_ss[which(data_ss$phenotype == "Tumor_new2"), "phenotype"] <- "Tumor"
-data_ss[which(data_ss$phenotype == "Tumor_new"), "phenotype"] <- "Tumor"
-data_ss[which(data_ss$phenotype == "CD11c_new"), "phenotype"] <- "CD11c.myeloid"
+#data_ss <- read.csv('/media/oncosys/Expansion/cellcycle/cellcycle_phenotypes_RCNs.csv')
+#data_ss <- read.csv('/media/oncosys/Expansion/cellcycle/cellcycle_phenotypes_TIM3.csv')
 
-#sit data_ss
 
-data_ss <- read.csv("E:/cellcycle/cellcycle_phenotypes_TIM3.csv")
+data_ss <- read.csv("D:/cellcycle/cycif_IDS_sample_validation_singlecell_spatial.csv")
+
+#test
 
 #CD163 expression in all macrophages
 
