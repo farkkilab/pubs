@@ -1,0 +1,77 @@
+---
+title: "Infer CD8+ T cell phenotypes"
+author: "Erdogan Pekcan Erkan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages}
+required_packages <- c("Seurat","dplyr","ProjecTILs")
+pacman::p_load(char = required_packages)
+```
+
+```{r load input and reference data}
+# Load seurat object
+seurat_object <- readRDS(file = "/data/rusers/sherer/projects/project_hgsc/data/preprocessed_data/hgsc_cycif_dim_red_filtered_publication_ids.RDS")
+
+# Load reference
+CD8T_reference <- load.reference.map(ref = "/data/rusers/sherer/projects/project_hgsc/reference_atlases/CD8T_human_ref_v1.rds")
+```
+
+```{r subset CD8+ T cells}
+Idents(seurat_object) <- "cell_type"
+keep_idents <- c("Tem/Trm cytotoxic T cells")
+seurat_CD8T<- subset(x = seurat_object, idents = keep_idents)
+```
+
+```{r run classifier}
+# Find variable features and perform reclustering
+seurat_CD8T <- seurat_CD8T |>
+        FindVariableFeatures(nfeatures = 2000) |>
+        ScaleData() |>
+        RunPCA() |>
+        FindNeighbors(dims = 1:25) |>
+        FindClusters(resolution = 0.5) |>
+        RunUMAP(dims = 1:25)
+
+# Run classifier
+seurat_CD8T <- ProjecTILs.classifier(query = seurat_CD8T, ref = CD8T_reference, filter.cells = FALSE)
+```
+
+```{r}
+# Define custom color palette for visualization
+palette <- c("#76D9B1", "#FFB3B5", "#CFC982", "#85D0F2", "#68001D", "#FF0000","#E7B5F5")
+
+# Name colors
+names(palette) <- c(levels(CD8T_reference$functional.cluster))
+
+# Make a UMAP plot
+umap_cd8tcell <- DimPlot(seurat_object, group.by = "functional.cluster", cols = palette) +
+        ggtitle(label = "") +
+        theme_minimal() + 
+        theme(panel.grid.major = element_blank(), 
+              panel.grid.minor = element_blank(), 
+              legend.text = element_text(size = 12), 
+              axis.text = element_blank(), 
+              axis.title = element_blank())
+
+# Save plot
+ggsave(filename = "umap_plot_cd8_tcell_states.tiff", 
+       plot = umap_cd8tcell, path = "../outputs/plots/", 
+       dpi = 600, 
+       width = 12, 
+       height = 8, 
+       units = "cm")
+```
+
+```{r save intermediate object}
+saveRDS(object = seurat_CD8T, file = "../data/preprocessed_data/hgsc_cycif_cd8tcell_ProjecTILs.RDS")
+```
+
+```{r}
+sessionInfo()
+```

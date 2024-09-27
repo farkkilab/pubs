@@ -1,0 +1,415 @@
+---
+title: "Recluster macrophages and find markers"
+author: "Erdogan Pekcan Erkan"
+date: "2024-08-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages}
+required_packages <- c("Seurat","speckle","grid","dplyr","ggpubr")
+pacman::p_load(char = required_packages)
+```
+
+```{r load data and subset macrophages}
+# Load seurat object
+seurat_object <- readRDS(file = "/shared/eperkan/Projects/project_sciset/data/preprocessed_data/hgsc_cycif_dim_red_filtered_publication_ids.RDS")
+
+Idents(seurat_object) <- "cell_type"
+seurat_macrophage <- subset(x = seurat_object, idents = "Macrophages")
+```
+
+```{r reclustering}
+seurat_macrophage <- NormalizeData(object = seurat_macrophage)
+seurat_macrophage <- FindVariableFeatures(object = seurat_macrophage)
+seurat_macrophage <- ScaleData(object = seurat_macrophage)
+seurat_macrophage <- RunPCA(object = seurat_macrophage, npcs = 1:50)
+seurat_macrophage <- FindNeighbors(object = seurat_macrophage, dims = 1:20)
+seurat_macrophage <- FindClusters(object = seurat_macrophage, resolution = 0.5)
+seurat_macrophage <- RunUMAP(object = seurat_macrophage, dims = 1:20)
+
+# UMAP plot
+umap_plot <- DimPlot(seurat_macrophage) + theme_bw()
+
+# Save plot
+ggsave(filename = "umap_plot_macrophage_after_reclustering.pdf", plot = umap_plot, path = "../outputs/plots/")
+
+saveRDS(object = seurat_macrophage, file = "../outputs/intermediate_objects/seurat_macrophage_reclustered.RDS")
+```
+
+```{r}
+# Load saved RDS file
+seurat_macrophage <- readRDS(file = "../outputs/intermediate_objects/seurat_macrophage_reclustered.RDS")
+featureplot_cd163 <- FeaturePlot(object = seurat_object, features = "CD163", raster = FALSE)
+featureplot_itgax <- FeaturePlot(object = seurat_object, features = "ITGAX", raster = FALSE)
+featureplot_aif1 <- FeaturePlot(object = seurat_object, features = "AIF1", raster = FALSE)
+
+featureplot_combined <- cowplot::plot_grid(featureplot_aif1, featureplot_cd163, featureplot_itgax, labels = "AUTO", ncol = 3)
+
+ggsave(filename = "feature_plots_macrophages.png", plot = featureplot_combined, path = "../outputs/plots/", dpi = 300)
+```
+
+```{r CD163+ and ITGAX+ macrophages}
+CD163_positive_cells <- WhichCells(object = seurat_macrophage, expression = CD163 > 0 & ITGAX == 0) # 6216 cells
+ITGAX_positive_cells <- WhichCells(object = seurat_macrophage, expression = ITGAX > 0 & CD163 == 0) # 4589 cells
+AIF1_CD163_positive_cells <- WhichCells(object = seurat_macrophage, expression = CD163 > 0 & AIF1 > 0 & ITGAX == 0) # 4580 cells
+AIF1_ITGAX_positive_cells <- WhichCells(object = seurat_macrophage, expression = CD163 == 0 & AIF1 > 0 & ITGAX > 0) # 2416 cells
+
+# 
+seurat_macrophage@meta.data$macrophage_subtypes <- "Other macrophages"
+seurat_macrophage@meta.data[CD163_positive_cells, ]$macrophage_subtypes <- "CD163+ macrophages"
+seurat_macrophage@meta.data[AIF1_CD163_positive_cells, ]$macrophage_subtypes <- "AIF1+ CD163+ macrophages"
+seurat_macrophage@meta.data[AIF1_ITGAX_positive_cells, ]$macrophage_subtypes <- "AIF1+ ITGAX+ macrophages"
+
+#seurat_macrophage@meta.data <- seurat_macrophage@meta.data %>% 
+#    mutate(macrophage_subtypes_v1 = case_when(cell_name %in% AIF1_positive_cells ~ "AIF1+ macrophages",
+#                                              cell_name %in% CD163_positive_cells ~ "CD163+ macrophages",
+#                                              cell_name %in% ITGAX_positive_cells ~ "ITGAX+ macrophages",
+#                                              cell_name %in% AIF1_CD163_positive_cells ~ "AIF1+ CD163+ macrophages",
+#                                              cell_name %in% AIF1_ITGAX_positive_cells ~ "AIF1+ ITGAX+ macrophages",
+#                                              .default = "Other_macrophages"))
+
+# Find markers
+macrophage_markers_v1 <- FindMarkers(object = seurat_macrophage, 
+                                  group.by = "macrophage_subtypes_v1",
+                                  ident.1 = "CD163_positive_macrophages", 
+                                  ident.2 = "ITGAX_positive_macrophages", 
+                                  test.use = "wilcox", )
+
+# Calculate pct.difference
+macrophage_markers_v1 <- macrophage_markers_v1 %>% mutate(pct_difference = pct.1 - pct.2)
+
+# Add gene symbols to a new column
+macrophage_markers_v1 <- macrophage_markers_v1 %>% mutate(gene_symbol = rownames(macrophage_markers_v1))
+
+# Filter by padj and sort by decreasing pct_difference
+macrophage_markers_v1_filtered <- macrophage_markers_v1 %>% filter(p_val_adj < 0.05) %>% arrange(desc(pct_difference))
+
+# Save results
+write.table(x = macrophage_markers_v1_filtered,
+            file = "../outputs/tables/de_genes_cd163_vs_itgax_macrophages.txt", 
+            quote = FALSE, 
+            sep = "\t", 
+            row.names = FALSE)
+```
+
+```{r second approach}
+seurat_macrophage@meta.data$macrophage_subtypes_v2 <- NA
+seurat_macrophage@meta.data[AIF1_CD163_positive_cells, ]$macrophage_subtypes_v2 <- "AIF1_CD163_positive_macrophages"
+seurat_macrophage@meta.data[AIF1_ITGAX_positive_cells, ]$macrophage_subtypes_v2 <- "AIF1_ITGAX_positive_macrophages"
+
+macrophage_markers_v2 <- FindMarkers(object = seurat_macrophage, 
+                                  group.by = "macrophage_subtypes_v2",
+                                  ident.1 = "AIF1_CD163_positive_macrophages", 
+                                  ident.2 = "AIF1_ITGAX_positive_macrophages", 
+                                  test.use = "wilcox")
+
+macrophage_markers_v2 <- macrophage_markers_v2 %>% mutate(pct_difference = pct.1 - pct.2)
+macrophage_markers_v2 <- macrophage_markers_v2 %>% mutate(gene_symbol = rownames(macrophage_markers_v2))
+macrophage_markers_v2_filtered <- macrophage_markers_v2 %>% filter(p_val_adj < 0.05) %>% arrange(desc(pct_difference))
+
+write.table(x = macrophage_markers_v2_filtered,
+            file = "../outputs/tables/de_genes_aif1cd163_vs_aif1itgax_macrophages.txt", 
+            quote = FALSE, sep = "\t", row.names = FALSE)
+```
+
+```{r calculate module scores}
+# Define gene sets
+gene_sets <- list(CD163 = macrophage_markers_v1_filtered %>% filter(avg_log2FC > 0) %>% pull(gene_symbol), 
+                  ITGAX = macrophage_markers_v1_filtered %>% filter(avg_log2FC < 0) %>% pull(gene_symbol))
+
+# Calculate module scores
+seurat_macrophage <- UCell::AddModuleScore_UCell(obj = seurat_macrophage, features = gene_sets)
+
+# Feature plots for module scores
+feature_plot_cd163module <- FeaturePlot(object = seurat_macrophage, features = "CD163_UCell") + theme_bw()
+feature_plot_itgaxmodule <- FeaturePlot(object = seurat_macrophage, features = "ITGAX_UCell") + theme_bw()
+
+feature_plot_modules <- cowplot::plot_grid(feature_plot_cd163module, feature_plot_itgaxmodule, labels = "AUTO")
+
+# Save plot
+ggsave(filename = "feature_plots_macrophages_after_reclustering.pdf", 
+       path = "../outputs/plots/", 
+       plot = feature_plot_modules, 
+       width = 12, 
+       height = 6)
+```
+
+```{r visualize NECTIN2 and CXCL12}
+dotplot_nectin2_cxcl12 <- DotPlot(object = seurat_macrophage, 
+                                  features = c("NECTIN2","CXCL12"), 
+                                  group.by = "macrophage_subtypes_v1", 
+                                  cols = "RdBu") + theme_bw() + coord_flip() + RotatedAxis() +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          axis.title = element_text(face = "bold", size = 14),
+          axis.text = element_text(size = 12),
+          legend.title = element_text(face = "bold", size = 14),
+          legend.text = element_text(size = 12))
+
+ggsave(filename = "dot_plot_NECTIN2_CXCL12.png", plot = dotplot_nectin2_cxcl12, dpi = 300, path = "../outputs/plots/", width = 8, height = 5)
+dotplot_nectin2_cxcl12
+pdf(file = "../outputs/plots/dot_plot_NECTIN2_CXCL12.pdf", width = 10, height = 5)
+dotplot_nectin2_cxcl12
+dev.off()
+```
+
+```{r}
+group_colors <- c("#777acd","#7aa456","#c65999","#c96d44")
+umap_plot_macrophage <- DimPlot(object = seurat_macrophage, group.by = "macrophage_subtypes", cols = group_colors) + theme_bw()
+
+ggsave(filename = "umap_plot_macrophage_subtypes.tiff", plot = umap_plot_macrophage, path = "../outputs/plots/", dpi = 300, width = 6, height = 4)
+```
+
+```{r}
+macrophage_markers_v1_filtered %>% filter(avg_log2FC > 0) %>% rownames() %>% write.table(file = "../outputs/tables/CD163_gene_set.txt", quote = FALSE, sep = "\t", row.names = FALSE, col.names = FALSE)
+macrophage_markers_v1_filtered %>% filter(avg_log2FC < 0) %>% rownames() %>% write.table(file = "../outputs/tables/ITGAX_gene_set.txt", quote = FALSE, sep = "\t", row.names = FALSE, col.names = FALSE)
+```
+
+```{r}
+# Dot plot for NECTIN2 and CXCL12
+dotplot_nectin_cxcl12 <- DotPlot(object = seurat_macrophage, features = c("NECTIN2","CXCL12"), group.by = "macrophage_subtypes_v1") + theme_bw()
+
+# Individual feature plots for NECTIN2 and CXCL12
+umap_nectin <- FeaturePlot(object = seurat_macrophage, features = "NECTIN2") + theme_bw()
+umap_cxcl12 <- FeaturePlot(object = seurat_macrophage, features = "CXCL12") + theme_bw()
+
+# Combine two
+cowplot::plot_grid(umap_nectin, umap_cxcl12, labels = "AUTO", ncol = 2)
+```
+
+```{r}
+# Classify macrophages based on gene module score ratio
+seurat_macrophage@meta.data <- seurat_macrophage@meta.data %>% mutate(CD163_ITGAX_subtype = case_when(CD163_UCell / ITGAX_UCell > 1 ~ "CD163_high",
+                                                                                                      CD163_UCell / ITGAX_UCell < 1 ~ "ITGAX_high"))
+
+gene_symbols <- c("NECTIN2","CXCL12","HLA-DQA1")
+mean_expression_df <- AverageExpression(object = seurat_macrophage, 
+                                        features = gene_symbols, 
+                                        assays = "RNA", 
+                                        slot = "counts",
+                                        group.by = "CD163_ITGAX_subtype")
+mean_expression_df <- mean_expression_df$RNA
+ComplexHeatmap::Heatmap(matrix = t(scale(t(mean_expression_df))), 
+                        col = rev(hcl.colors(n = 100, palette = "RdBu")), 
+                        name = "Average feature expression", 
+                        rect_gp = grid::gpar(col = "white", lwd = 2))
+
+```
+
+```{r feature plots for CD163 and ITGAX module scores}
+# Initiate an empty list to store plots
+umap_plots <- list()
+
+# Feature plot for CD163 module score without legend
+umap_plots$CD163 <- FeaturePlot(object = seurat_macrophage, 
+            features = "CD163_UCell", 
+            cols = rev(hcl.colors(n = 5, palette = "PurpOr"))) + 
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(), 
+          legend.position = "none", 
+          text = element_text(size = 14),
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank(), 
+          plot.title = element_text(hjust = 0.5, face = "bold")) +
+    ggtitle("CD163 module score")
+
+# Feature plot for CD163 module score with legend
+umap_plots$ITGAX <- FeaturePlot(object = seurat_macrophage, 
+            features = "ITGAX_UCell", 
+            cols = rev(hcl.colors(n = 5, palette = "PurpOr"))) + 
+    labs(color = "Module score") + 
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          text = element_text(size = 14),
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank(), 
+          plot.title = element_text(hjust = 0.5, face = "bold")) +
+    ggtitle("ITGAX module score")
+
+# Combine two plots
+umap_plot_combined <- cowplot::plot_grid(plotlist = umap_plots)
+
+# Save
+ggsave(filename = "umap_plot_macrophage_CD163_ITGAX_module_scores.tiff", 
+       plot = umap_plot_combined, 
+       path = "../outputs/plots/", 
+       width = 10, height = 4, dpi = 600)
+```
+
+```{r clinical data}
+clinical_data <- read.delim(file = "../data/sciset_clinical_data.tsv")
+```
+
+```{r compare module scores between PFI groups}
+itgax_scores <- seurat_macrophage@meta.data %>% dplyr::select(sample, treatment_stage, ITGAX_UCell)
+
+# Calculate average module scores per patient
+itgax_scores_average <- itgax_scores %>% group_by(sample, treatment_stage) %>% summarise(mean_score = mean(ITGAX_UCell))
+
+# Add patient id to a new column
+itgax_scores_average <- itgax_scores_average %>% mutate(patient_id = substr(x = sample, start = 1, stop = 4))
+
+# Add PFI_category
+itgax_scores_average$PFI_category <- NA
+itgax_scores_average$PFI_category <- clinical_data[match(itgax_scores_average$patient_id, clinical_data$patient_code), ]$PFI_category
+
+# Save scores
+write.table(x = itgax_scores_average, file = "../outputs/tables/mean_itgax_scores_macrophages.txt", quote = FALSE, sep = "\t", row.names = FALSE)
+
+itgax_scores_average[itgax_scores_average$treatment_stage == "chemo-naive", ]$treatment_stage <- "Chemo-naive"
+itgax_scores_average[itgax_scores_average$PFI_category == "long", ]$PFI_category <- "Long"
+itgax_scores_average[itgax_scores_average$PFI_category == "short", ]$PFI_category <- "Short"
+
+# Box plot: ITGAX scores vs PFI_category, faceted by treatment_stage
+boxplot_itgax_pfi <- itgax_scores_average %>% 
+    ggboxplot(x = "PFI_category", 
+              y = "mean_score", 
+              ggtheme = theme_bw(), 
+              fill = "PFI_category", 
+              palette = c("#EE964B","#F95738"), 
+              add = "jitter",
+              xlab = "PFI category" ,
+              ylab = "Mean ITGAX module score in macrophages", 
+              facet.by = "treatment_stage") + 
+    geom_pwc(method = "wilcox_test", label = "p = {p}") + 
+    scale_y_continuous(breaks = get_breaks(by = 0.1, from = 0), limits = c(0, 0.5)) +
+    theme(axis.text.x = element_blank(),
+          axis.text.y = element_text(size = 12),
+          axis.title.x = element_text(face = "bold", size = 14),
+          axis.title.y = element_text(face = "bold", size = 14), 
+          legend.text = element_text(size = 12), 
+          legend.title = element_text(face = "bold", size = 14),
+          strip.text.x = element_text(size = 12, face = "bold"))
+
+# Save plot
+ggsave(filename = "boxplot_itgax_module_score_pfi_category.pdf", plot = boxplot_itgax_pfi, path = "../outputs/plots/", width = 6, height = 5)
+```
+
+```{r compare module scores between chemo-naive and IDS samples}
+pn_samples <- seurat_macrophage@meta.data %>% filter(treatment_stage == "IDS") %>% pull(sample) %>% unique()
+tn_samples <- seurat_macrophage@meta.data %>% filter(treatment_stage == "chemo-naive") %>% pull(sample) %>% unique()
+pn_pairs <- sort(pn_samples[gsub("_.*", "", pn_samples) %in% gsub("_.*", "", tn_samples)])
+tn_pairs <- sort(tn_samples[gsub("_.*", "", tn_samples) %in% gsub("_.*", "", pn_samples)])
+
+itgax_scores_average %>% filter(PFI_category == "")
+
+itgax_scores_average_tn <- itgax_scores_average %>% filter(sample %in% tn_pairs)
+itgax_scores_average_pn <- itgax_scores_average %>% filter(sample %in% pn_pairs)
+
+itgax_paired <- data.frame(chemonaive = itgax_scores_average_tn$mean_score,
+                           IDS = itgax_scores_average_pn$mean_score)
+
+ggpaired(data = itgax_paired, 
+         cond1 = "Chemo_naive", 
+         cond2 = "IDS", 
+         fill = "condition", 
+         palette = "jco", 
+         xlab = "Treatment stage",
+         ylab = "Mean ITGAX module score", 
+         ggtheme = theme_bw()) + 
+    stat_compare_means(paired = TRUE)
+
+```
+
+```{r compare CD163 module scores}
+CD163_scores <- seurat_macrophage@meta.data %>% dplyr::select(sample, treatment_stage, CD163_UCell)
+
+# Calculate average module scores per patient
+CD163_scores_average <- CD163_scores %>% group_by(sample, treatment_stage) %>% summarise(mean_score = mean(CD163_UCell))
+
+# Add patient id to a new column
+CD163_scores_average <- CD163_scores_average %>% mutate(patient_id = substr(x = sample, start = 1, stop = 4))
+
+# Add PFI_category
+CD163_scores_average$PFI_category <- NA
+CD163_scores_average$PFI_category <- clinical_data[match(CD163_scores_average$patient_id, clinical_data$patient_code), ]$PFI_category
+
+CD163_scores_average[CD163_scores_average$treatment_stage == "chemo-naive", ]$treatment_stage <- "Chemo-naive"
+CD163_scores_average[CD163_scores_average$PFI_category == "long", ]$PFI_category <- "Long"
+CD163_scores_average[CD163_scores_average$PFI_category == "short", ]$PFI_category <- "Short"
+
+# Save table
+write.table(x = CD163_scores_average, file = "../outputs/tables/mean_cd163_scores_macrophages.txt", quote = FALSE, sep = "\t", row.names = FALSE)
+
+# Box plot: CD163 scores vs PFI_category, faceted by treatment_stage
+boxplot_cd163_pfi <- CD163_scores_average %>% 
+    ggboxplot(x = "PFI_category", 
+              y = "mean_score", 
+              ggtheme = theme_bw(), 
+              fill = "PFI_category", 
+              palette = c("#EE964B","#F95738"), 
+              add = "jitter",
+              xlab = "PFI category" ,
+              ylab = "Mean CD163 module score in macrophages", 
+              facet.by = "treatment_stage") + 
+    geom_pwc(method = "wilcox_test", label = "p = {p}") + 
+    scale_y_continuous(breaks = get_breaks(by = 0.2, from = 0), limits = c(0, 0.8)) +
+    theme(axis.text.x = element_blank(),
+          axis.text.y = element_text(size = 12),
+          axis.title.x = element_text(face = "bold", size = 14),
+          axis.title.y = element_text(face = "bold", size = 14), 
+          legend.text = element_text(size = 12), 
+          legend.title = element_text(face = "bold", size = 14),
+          strip.text.x = element_text(size = 12, face = "bold"))
+
+# Save plot
+ggsave(filename = "boxplot_CD163_module_score_pfi_category.pdf", plot = boxplot_cd163_pfi, path = "../outputs/plots/", width = 6, height = 5)
+```
+
+```{r pseudobulk}
+library(DESeq2)
+pseudobulk_expression <- AggregateExpression(object = seurat_macrophage, 
+                                             assays = "RNA", 
+                                             slot = "counts", 
+                                             return.seurat = FALSE, 
+                                             group.by = c('sample','treatment_stage'))
+
+# Get the count matrix
+pseudobulk_expression <- pseudobulk_expression[["RNA"]]
+
+# Rename columns
+sample_ids <- pseudobulk_expression %>% colnames() %>% as.character()
+colnames(pseudobulk_expression) <- sample_ids
+
+# Prepare meta data for DESeq2
+pseudobulk_expression_metadata <- data.frame(sample = sample_ids)
+pseudobulk_expression_metadata$treatment_stage <- NA
+pseudobulk_expression_metadata[grep(pattern = "_IDS", x = pseudobulk_expression_metadata$sample), ]$treatment_stage <- "IDS"
+pseudobulk_expression_metadata[grep(pattern = "_chemo-naive", x = pseudobulk_expression_metadata$sample), ]$treatment_stage <- "chemo_naive"
+pseudobulk_expression_metadata$sample <- gsub(pattern = "_chemo-naive|_IDS", replacement = "", x = pseudobulk_expression_metadata$sample)
+pseudobulk_expression_metadata$patient <- substr(x = pseudobulk_expression_metadata$sample, start = 1, stop = 4)
+rownames(pseudobulk_expression_metadata) <- sample_ids
+
+# Convert to factor
+pseudobulk_expression_metadata$treatment_stage <- factor(pseudobulk_expression_metadata$treatment_stage, levels = c("chemo_naive","IDS"))
+
+# Create a dds object
+dds <- DESeqDataSetFromMatrix(countData = pseudobulk_expression, 
+                              colData = pseudobulk_expression_metadata, 
+                              design = ~treatment_stage)
+
+dds <- estimateSizeFactors(object = dds)
+
+keep_features <- rowSums(counts(dds, normalized = TRUE)) > 0
+dds <- dds[keep_features, ]
+
+dds <- DESeq(object = dds)
+
+dea_results <- results(object = dds)
+dea_results_table <- dea_results %>% as.data.frame()
+dea_results_table <- dea_results_table %>% arrange(desc(log2FoldChange))
+dea_results_table <- dea_results_table %>% mutate(gene_symbol = rownames(dea_results_table))
+
+# Save
+dea_results_table %>% 
+    write.table(file = "../outputs/tables/dea_results_pseudobulk_macrophages_IDS_vs_chemonaive.txt", quote = FALSE, sep = "\t", row.names = FALSE)
+```
+

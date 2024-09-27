@@ -1,0 +1,100 @@
+---
+title: "prepare_scrnaseq_data"
+format: html
+editor: visual
+---
+
+This Quarto document describes the preprocessing steps performed on the single-cell RNA-sequencing (scRNA-seq) data set in the manuscript.
+
+```{r}
+# Define output directory
+output_dir <- "/shared/eperkan/Projects/EPE_PR1/extended_set/preprocessed_data"
+```
+
+```{r load packages}
+# Load required packages
+required_packages <- c("Seurat","sctransform","dplyr")
+pacman::p_load(chr = required_packages)
+```
+
+## Load preprocessed data
+
+```{r load preprocessed data}
+# Load seurat object: miQC + logncount filtered
+seurat_object <- readRDS(file = "/shared/eperkan/Projects/EPE_PR1/extended_set/preprocessed_data/miqc_and_logncount_filtered_immune_subset.RDS")
+
+dim(seurat_object)
+```
+
+## Subset data
+
+```{r subset}
+# Load list of samples to keep
+samples <- read.delim(file = "/shared/eperkan/Projects/EPE_PR1/extended_set/paired_samples/samples_to_keep.txt")
+
+# Change identss
+Idents(seurat_object) <- "sample"
+
+# Subset to retain control samples
+seurat_subset <- subset(x = seurat_object, idents = samples)
+```
+
+## Normalization via sctransform
+
+```{r sctransform}
+# Run sctransform while removing confounding sources of variation: "percent.mt"
+seurat_subset <- SCTransform(object = seurat_subset, 
+                             vars.to.regress = "percent.mt", 
+                             verbose = TRUE, 
+                             conserve.memory = TRUE, 
+                             vst.flavor = "v2")
+
+# Save intermediate object after sctransform
+saveRDS(object = seurat_subset, 
+        file = paste0(output_dir, "/paired_samples_sctransform.RDS"))
+```
+
+## Dimensionality reduction by PCA
+
+```{r pca}
+# Run PCA
+seurat_subset <- RunPCA(object = seurat_subset, 
+                        npcs = 200, 
+                        verbose = TRUE)
+
+# Make and save an elbow plot to decide on npcs to use
+ElbowPlot(object = seurat_subset, 
+          ndims = 200, 
+          reduction = "pca")
+
+```
+
+## Perform clustering
+
+```{r clustering}
+# Run UMAP
+seurat_subset <- RunUMAP(seurat_subset, 
+                         dims = 1:100, 
+                         verbose = TRUE)
+
+# Find neighbors
+seurat_subset <- FindNeighbors(seurat_subset, 
+                               dims = 1:100, 
+                               verbose = TRUE)
+
+# Define resolutions of interest
+chosen_res <- seq(0, 3, 1) 
+
+# Find clusters
+seurat_subset <- FindClusters(object = seurat_subset, 
+                              resolution = chosen_res, 
+                              verbose = TRUE)
+
+# Save
+saveRDS(object = seurat_subset, 
+        file = paste0(output_dir, "/paired_samples_dim_red.RDS"))
+```
+
+```{r}
+sessionInfo()
+```

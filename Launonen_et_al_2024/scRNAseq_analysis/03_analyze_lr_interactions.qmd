@@ -1,0 +1,219 @@
+---
+title: "Cell-to-cell communication analysis with MultiNicheNet"
+author: "Erdogan Pekcan Erkan"
+format: html
+editor: visual
+---
+
+```{r packages}
+required_packages <- c("Seurat","SingleCellExperiment","dplyr","ggplot2","multinichenetr")
+pacman::p_load(char = required_packages)
+```
+
+```{r load functions}
+source("../functions/convert_seurat_to_sce.R")
+source("../functions/get_top_n_lr_pairs_v2.R")
+source("../functions/make_sample_lr_prod_activity_plots_v2.R")
+```
+
+```{r load lr network}
+organism <- "human"
+if(organism == "human"){
+  lr_network = readRDS(url("https://zenodo.org/record/7074291/files/lr_network_human_21122021.rds"))
+  lr_network = lr_network %>% dplyr::rename(ligand = from, receptor = to) %>% distinct(ligand, receptor) %>% mutate(ligand = make.names(ligand), receptor = make.names(receptor))
+  ligand_target_matrix = readRDS(url("https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final.rds"))
+  colnames(ligand_target_matrix) = colnames(ligand_target_matrix) %>% make.names()
+  rownames(ligand_target_matrix) = rownames(ligand_target_matrix) %>% make.names()
+} else if(organism == "mouse"){
+  lr_network = readRDS(url("https://zenodo.org/record/7074291/files/lr_network_mouse_21122021.rds"))
+  lr_network = lr_network %>% dplyr::rename(ligand = from, receptor = to) %>% distinct(ligand, receptor) %>% mutate(ligand = make.names(ligand), receptor = make.names(receptor))
+  ligand_target_matrix = readRDS(url("https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final_mouse.rds"))
+  colnames(ligand_target_matrix) = colnames(ligand_target_matrix) %>% make.names()
+  rownames(ligand_target_matrix) = rownames(ligand_target_matrix) %>% make.names()
+}
+```
+
+```{r load and filter data}
+# Load Seurat object
+seurat_object <- readRDS("../data/preprocessed_data/hgsc_cycif_dim_red_filtered_publication_ids.RDS")
+
+# Get chemo-naive (cn) and IDS (ids) samples
+cn_samples <- seurat_object@meta.data %>% filter(treatment_stage == "IDS") %>% pull(sample) %>% unique()
+ids_samples <- seurat_object@meta.data %>% filter(treatment_stage == "chemo-naive") %>% pull(sample) %>% unique()
+
+# Define paired samples
+ids_pairs <- sort(ids_samples[gsub("_.*", "", ids_samples) %in% gsub("_.*", "", cn_samples)])
+cn_pairs <- sort(cn_samples[gsub("_.*", "", cn_samples) %in% gsub("_.*", "", ids_samples)])
+
+# Retain pairs
+Idents(seurat_object) <- "sample"
+seurat_object <- subset(seurat_object, idents = c(cn_pairs, ids_pairs))
+
+# Keep cell type(s) of interest and convert Seurat to SCE
+Idents(seurat_object) <- "cell_type"
+
+# Define cell types to include in the analysis
+cell_idents <- c("Macrophages", "Tem/Trm cytotoxic T cells", "Epithelial cells")
+
+# Convert Seurat to SCE
+sce <- ConvertSeuratToSCE(input = seurat_object, cell_idents = cell_idents)
+```
+
+```{r create diagnostic plots for cell type abundance}
+abundance_expression_info <- get_abundance_expression_info(sce = sce, 
+                                                           sample_id = "publication_sample_code", 
+                                                           group_id = "treatment_stage", 
+                                                           celltype_id = "cell_type", 
+                                                           min_cells = 10, 
+                                                           senders_oi = senders_oi, 
+                                                           receivers_oi = receivers_oi, 
+                                                           lr_network = lr_network, 
+                                                           batches = batches)
+
+# Visualize cell type abundances per sample
+abundance_expression_info$abund_plot_sample
+
+# Visualize cell abundances per group
+abundance_expression_info$abund_plot_group
+```
+
+```{r define metadata columns}
+# Define metadata columns 
+sample_id <- "publication_sample_code"
+group_id <- "class"
+celltype_id <- "cell_type"
+covariates <- "publication_patient_code" 
+batches <- NA
+
+# Define sender and receiver cell types
+senders_oi <- SummarizedExperiment::colData(sce)[, celltype_id] %>% unique()
+receivers_oi <- SummarizedExperiment::colData(sce)[, celltype_id] %>% unique()
+
+# Define minimum number of cells per condition
+min_cells <- 10
+
+# Set contrasts
+contrasts_oi <- c("'ids-chemonaive','chemonaive-ids'")
+
+# Create a contrast table
+contrast_tbl <- tibble(contrast = c("ids-chemonaive","chemonaive-ids"), 
+                       group = c("ids", "chemonaive"))
+
+# Subset SCE object
+sce <- sce[, SummarizedExperiment::colData(sce)[,group_id] %in% contrast_tbl$group]
+```
+
+```{r define parameters for MultiNicheNet ligand activity analysis}
+logFC_threshold <- 0.75
+p_val_threshold <- 0.05
+fraction_cutoff <- 0.10
+p_val_adj <- TRUE 
+empirical_pval <- FALSE
+top_n_target <- 250
+cores_system <- 4
+n.cores <- min(cores_system, union(senders_oi, receivers_oi) %>% length()) # use one core per receiver cell type
+
+# Define weights for prioritization
+prioritizing_weights_DE <- c("de_ligand" = 1, "de_receptor" = 1)
+prioritizing_weights_activity <- c("activity_scaled" = 2)
+prioritizing_weights_expression_specificity <- c("exprs_ligand" = 2, "exprs_receptor" = 2)
+prioritizing_weights_expression_sufficiency <- c("frac_exprs_ligand_receptor" = 1)
+prioritizing_weights_relative_abundance <- c("abund_sender" = 0, "abund_receiver" = 0)
+
+prioritizing_weights <- c(prioritizing_weights_DE, 
+                          prioritizing_weights_activity, 
+                          prioritizing_weights_expression_specificity, 
+                          prioritizing_weights_expression_sufficiency, 
+                          prioritizing_weights_relative_abundance)
+```
+
+```{r run multinichenet}
+multinichenet_output <- multi_nichenet_analysis(sce = sce, 
+                                                celltype_id = celltype_id, 
+                                                sample_id = sample_id, 
+                                                group_id = group_id, 
+                                                lr_network = lr_network, 
+                                                ligand_target_matrix = ligand_target_matrix, 
+                                                contrasts_oi = contrasts_oi, 
+                                                contrast_tbl = contrast_tbl, 
+                                                batches = batches, 
+                                                covariates = covariates, 
+                                                prioritizing_weights = prioritizing_weights, 
+                                                min_cells = min_cells, 
+                                                logFC_threshold = logFC_threshold,
+                                                p_val_threshold = p_val_threshold, 
+                                                fraction_cutoff = fraction_cutoff, 
+                                                p_val_adj = p_val_adj, 
+                                                empirical_pval = empirical_pval, 
+                                                top_n_target = top_n_target, 
+                                                n.cores = n.cores, 
+                                                sender_receiver_separate = FALSE, 
+                                                verbose = TRUE)
+
+# Save results
+multinichenet_output$prioritization_tables$group_prioritization_tbl %>% 
+    write.table(file = "../outputs/tables/multinichenet_group_prioritization_table_macrophages_vs_cd8_t_cells_allpairs.txt", 
+                quote = F, 
+                sep = "\t", 
+                row.names = F)
+```
+
+```{r visualization circos plots}
+prioritized_tbl_oi_all <- get_top_n_lr_pairs(multinichenet_output$prioritization_tables, 50, rank_per_group = TRUE)
+
+prioritized_tbl_oi <- multinichenet_output$prioritization_tables$group_prioritization_tbl %>%
+  filter(id %in% prioritized_tbl_oi_all$id) %>%
+  distinct(id, sender, receiver, ligand, receptor, group) %>% left_join(prioritized_tbl_oi_all)
+
+# Set NA values to zero
+prioritized_tbl_oi$prioritization_score[is.na(prioritized_tbl_oi$prioritization_score)] <- 0
+
+# Define sender and receiver cells
+senders_receivers <- union(prioritized_tbl_oi$sender %>% unique(), prioritized_tbl_oi$receiver %>% unique()) %>% sort()
+
+# Set colors for sender and receiver cells
+colors_sender <- RColorBrewer::brewer.pal(n = length(senders_receivers), name = 'Spectral') %>% magrittr::set_names(senders_receivers)
+colors_receiver <- RColorBrewer::brewer.pal(n = length(senders_receivers), name = 'Spectral') %>% magrittr::set_names(senders_receivers)
+
+# Create circos plots to visualize top 50 predictions across all contrasts, senders, and receivers of interest
+circos_list <- make_circos_group_comparison(prioritized_tbl_oi, colors_sender, colors_receiver)
+
+# Save plots
+# Save
+pdf(file = "../outputs/plots/circos_plot_lr_interactions_chemonaive_allpairs.pdf", width = 10, height = 10)
+circos_list$chemonaive
+dev.off()
+
+# Save
+pdf(file = "../outputs/plots/circos_plot_lr_interactions_ids_allpairs.pdf", width = 10, height = 10)
+circos_list$ids
+dev.off()
+
+# Save
+pdf(file = "../outputs/plots/circos_plot_lr_interactions_legend.pdf", width = 10, height = 10)
+circos_list$legend
+dev.off()
+
+```
+
+```{r visualization lr product and ligand activity plot}
+# Extract top 30 predicted interactions between macrophages and CD8+ T cells
+interactions_macrophage_cd8t <- get_top_n_lr_pairs_v2(prioritization_tables = multinichenet_output$prioritization_tables, 
+                                                      top_n = 30, 
+                                                      groups_oi = "ids", 
+                                                      senders_oi = "Macrophages", 
+                                                      receivers_oi = "Tem.Trm.cytotoxic.T.cells")
+
+# Plot
+lr_prod_activity_plot <- make_sample_lr_prod_activity_plots_v2(prioritization_tables = multinichenet_output$prioritization_tables,
+                                                               prioritized_tbl_oi = interactions_macrophage_cd8t)
+
+# Save plot
+pdf("../outputs/plots/multinichenet_lr_prod_activity_plot_macrophage_cd8_tcell.pdf", width = 20, height = 12)
+lr_prod_activity_plot
+dev.off()
+```
+
+```{r}
+sessionInfo()
+```

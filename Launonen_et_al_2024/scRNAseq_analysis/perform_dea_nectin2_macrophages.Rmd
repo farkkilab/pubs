@@ -1,0 +1,56 @@
+---
+title: "Differential expression analysis: NECTIN2+ vs NECTIN2- macrophages"
+author: "Erdogan Pekcan Erkan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages}
+required_packages <- c("Seurat","speckle","grid","dplyr","ggpubr")
+pacman::p_load(char = required_packages)
+```
+
+```{r load macrophage subset after reclustering}
+# Load seurat object
+seurat_macrophage <- readRDS(file = "../outputs/intermediate_objects/seurat_macrophage_reclustered.RDS")
+```
+
+```{r NECTIN2+ and NECTIN2- macrophages}
+# Define NECTIN2+ and NECTIN2- macrophages
+NECTIN2_positive_cells <- WhichCells(object = seurat_macrophage, expression = NECTIN2 > 0) # 6636 cells
+
+# Add NECTIN2 expression status to a new meta data column
+seurat_macrophage@meta.data <- seurat_macrophage@meta.data %>% 
+        mutate(NECTIN2_expression = case_when(rownames(seurat_macrophage@meta.data) %in% NECTIN2_positive_cells ~ "NECTIN2_positive",
+                                            .default = "NECTIN2_negative"))
+
+# Find markers between two groups
+NECTIN2_markers <- FindMarkers(object = seurat_macrophage, 
+                               group.by = "NECTIN2_expression",
+                               ident.1 = "NECTIN2_positive", 
+                               ident.2 = "NECTIN2_negative", 
+                               test.use = "wilcox")
+
+# Calculate pct.difference
+NECTIN2_markers <- NECTIN2_markers %>% mutate(pct_difference = pct.1 - pct.2)
+
+# Add gene symbols to a new column
+NECTIN2_markers <- NECTIN2_markers %>% mutate(gene_symbol = rownames(NECTIN2_markers))
+
+# Filter by padj and sort by decreasing pct_difference
+NECTIN2_markers <- NECTIN2_markers %>% filter(p_val_adj < 0.05) %>% arrange(desc(avg_log2FC))
+
+# Save results
+write.csv(x = NECTIN2_markers,
+          file = "../outputs/tables/dea_results_macrophages_NECTIN2_positive_vs_negative.csv",  
+          quote = FALSE,
+          row.names = FALSE)
+```
+
+```{r}
+sessionInfo()
+```

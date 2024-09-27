@@ -1,0 +1,160 @@
+---
+title: "Analyze cell abundance changes after NACT"
+author: "Erdogan Pekcan Erkan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r packages}
+required_packages <- c("Seurat","speckle","grid","dplyr","ggplot2")
+pacman::p_load(char = required_packages)
+```
+
+```{r load data}
+# Load seurat object
+seurat_object <- readRDS(file = "/shared/eperkan/Projects/project_sciset/data/preprocessed_data/hgsc_cycif_dim_red_filtered_publication_ids.RDS")
+
+# Define paired samples
+paired_samples <- c("H086_iMes", "H086_pOme", "H087_iOvaR", "H087_pPer", "H091_iOme1", "H091_pOme", 
+                    "H112_iPer", "H112_pPer", "H114_iOvaR", "H114_pOme2", "H116_iOme1", "H116_pOme", 
+                    "H122_iOme1", "H122_pTum1", "H128_iOme2", "H128_p2Ome", "H142_iOme2", "H142_pPer1",
+                    "H144_iOme1", "H144_pPer1_2", "H147_iOme", "H147_pMes1", "H160_iOme", "H160_pPer", 
+                    "H166_iTum2", "H166_pPer", "H173_iOme1", "H173_pOme", "H185_iOme1", "H185_pPer1", 
+                    "H190_iOme1", "H190_pPer2", "H194_iOme", "H194_pOme1", "H201_iOme1", "H201_pOme1_2", 
+                    "H215_iOme1", "H215_pOme1", "H231_iOme1", "H231_pOme1", "H256_iOme1", "H256_pPer1", 
+                    "H292_iAsc", "H292_pAsc1")
+
+# Subset paired samples
+Idents(seurat_object) <- "sample"
+seurat_object_paired <- subset(seurat_object, idents = paired_samples)
+```
+
+```{r define groups}
+# Get chemo-naive and IDS samples
+pn_samples <- seurat_object@meta.data %>% filter(treatment_stage == "IDS") %>% pull(sample) %>% unique()
+tn_samples <- seurat_object@meta.data %>% filter(treatment_stage == "chemo-naive") %>% pull(sample) %>% unique()
+pn_omentum <- pn_samples[grep(pattern = "Ome", x = pn_samples)]
+tn_omentum <- tn_samples[grep(pattern = "Ome", x = tn_samples)]
+
+# Extract TN-PN pairs
+pn_pairs <- sort(pn_samples[gsub("_.*", "", pn_samples) %in% gsub("_.*", "", tn_samples)])
+tn_pairs <- sort(tn_samples[gsub("_.*", "", tn_samples) %in% gsub("_.*", "", pn_samples)])
+pn_omentum_pairs <- sort(pn_omentum[gsub("_.*", "", pn_omentum) %in% gsub("_.*", "", tn_omentum)])
+tn_omentum_pairs <- sort(tn_omentum[gsub("_.*", "", tn_omentum) %in% gsub("_.*", "", pn_omentum)])
+```
+
+```{r visualize cell proportions}
+# Define bar plot colors
+barplot_colors <- Polychrome:: kelly.colors(22) %>% as.character()
+
+# Visualize cell fractions per sample
+plotCellTypeProps(x = seurat_object, 
+                  clusters = seurat_object@meta.data$cell_type, 
+                  sample = seurat_object@meta.data$sample) + 
+    theme_bw() + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + scale_fill_manual(values = barplot_colors)
+```
+
+```{r run propeller}
+# Create a new list to store propeller results
+propeller_results <- list()
+
+# Get transformed cell type proportions
+props <- getTransformedProps(clusters = seurat_object_paired@meta.data$cell_type, 
+                             sample = seurat_object_paired@meta.data$sample, 
+                             transform = "logit")
+
+# Define groups to com
+groups_to_compare <- rep(c("IDS","chemo-naive"),22)
+pairs_to_compare <- rep(1:22, each = 2)
+
+design <- model.matrix(~ 0 + groups_to_compare + pairs_to_compare)
+
+propeller_results$allpairs_cell_type_low <- propeller.anova(prop.list=props, design=design, 
+                                                            coef = c(1,2), 
+                                                            robust = TRUE, 
+                                                            trend = FALSE, 
+                                                            sort = TRUE)
+```
+
+```{r run propeller}
+# Get transformed cell type proportions
+props <- getTransformedProps(clusters = seurat_object@meta.data$cell_type_cycif, 
+                             sample = seurat_object@meta.data$sample, 
+                             transform = "logit")
+
+# Define groups and pairs to compare
+groups_to_compare <- rep(c("IDS","chemo-naive"),22)
+pairs_to_compare <- rep(1:22, each = 2)
+
+# Define design matrix
+design <- model.matrix(~ 0 + groups_to_compare + pairs_to_compare)
+
+# Run propeller
+propeller_results$allpairs_cell_type_high <- propeller.anova(prop.list=props, 
+                                                             design=design, 
+                                                             coef = c(1,2), 
+                                                             robust = TRUE, 
+                                                             trend = FALSE, 
+                                                             sort = TRUE)
+```
+
+```{r subset omentum samples}
+Idents(seurat_object) <- "sample"
+seurat_omentum <- subset(x = seurat_object, idents = c(tn_omentum_pairs, pn_omentum_pairs))
+```
+
+```{r run propeller omentum pairs cell type low}
+# Get transformed cell type proportions
+props <- getTransformedProps(clusters = seurat_omentum@meta.data$cell_type, 
+                             sample = seurat_omentum@meta.data$sample, 
+                             transform = "logit")
+
+# Define groups and pairs to compare
+groups_to_compare <- rep(c("IDS","chemo-naive"),8)
+pairs_to_compare <- rep(1:8, each = 2)
+
+# Define design matrix
+design <- model.matrix(~ 0 + groups_to_compare + pairs_to_compare)
+
+# Run propeller
+propeller_results$omepairs_cell_type_low <- propeller.anova(prop.list = props, 
+                                                            design = design, 
+                                                            coef = c(1,2), 
+                                                            robust = TRUE, 
+                                                            trend = FALSE, 
+                                                            sort = TRUE)
+```
+
+```{r run propeller omentum pairs cell type high}
+# Get transformed cell type proportions
+props <- getTransformedProps(clusters = seurat_omentum@meta.data$cell_type_cycif, 
+                             sample = seurat_omentum@meta.data$sample, 
+                             transform = "logit")
+
+# Define groups and pairs to compare
+groups_to_compare <- rep(c("IDS","chemo-naive"),8)
+pairs_to_compare <- rep(1:8, each = 2)
+
+# Define design matrix
+design <- model.matrix(~ 0 + groups_to_compare + pairs_to_compare)
+
+# Run propeller
+propeller_results$omepairs_cell_type_high <- propeller.anova(prop.list = props, 
+                                                             design = design, 
+                                                             coef = c(1,2), 
+                                                             robust = TRUE, 
+                                                             trend = FALSE, 
+                                                             sort = TRUE)
+```
+
+```{r save results}
+lapply(names(propeller_results), 
+       function(x) write.table(x = propeller_results[[x]], 
+                               file = paste0("/shared/eperkan/Projects/project_sciset/outputs/tables/propeller_cell_abundance_", x, ".txt"),
+                               quote = F, 
+                               sep = "\t"))
+```
+
+```{r}
+sessionInfo()
+```

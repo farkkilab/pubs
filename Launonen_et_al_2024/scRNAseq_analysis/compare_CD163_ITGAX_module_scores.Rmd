@@ -1,0 +1,153 @@
+---
+title: "Compare CD163 and ITGAX module scores"
+author: "Erdogan Pekcan Erkan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages}
+required_packages <- c("Seurat","speckle","grid","dplyr","ggpubr")
+pacman::p_load(char = required_packages)
+```
+
+```{r load seurat object}
+# Seurat object for macrophages
+seurat_macrophage <- readRDS(file = "../outputs/intermediate_objects/seurat_macrophage_reclustered.RDS")
+```
+
+```{r load clinical data}
+clinical_data <- read.delim(file = "../data/sciset_clinical_data.tsv")
+```
+
+```{r feature plots for CD163 and ITGAX module scores}
+# Initiate an empty list to store plots
+umap_plots <- list()
+
+# Feature plot for CD163 module score without legend
+umap_plots$CD163 <- FeaturePlot(object = seurat_macrophage, 
+            features = "CD163_UCell", 
+            cols = rev(hcl.colors(n = 5, palette = "PurpOr"))) + 
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(), 
+          legend.position = "none", 
+          text = element_text(size = 14),
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank(), 
+          plot.title = element_text(hjust = 0.5, face = "bold")) +
+    ggtitle("CD163 module score")
+
+# Feature plot for CD163 module score with legend
+umap_plots$ITGAX <- FeaturePlot(object = seurat_macrophage, 
+            features = "ITGAX_UCell", 
+            cols = rev(hcl.colors(n = 5, palette = "PurpOr"))) + 
+    labs(color = "Module score") + 
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          text = element_text(size = 14),
+          axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.title = element_blank(), 
+          plot.title = element_text(hjust = 0.5, face = "bold")) +
+    ggtitle("ITGAX module score")
+
+# Combine two plots
+umap_plot_combined <- cowplot::plot_grid(plotlist = umap_plots)
+
+# Save
+ggsave(filename = "umap_plot_macrophage_CD163_ITGAX_module_scores.tiff", 
+       plot = umap_plot_combined, 
+       path = "../outputs/plots/", 
+       width = 10, height = 4, dpi = 600)
+```
+
+```{r function to compare module scores}
+# Function to compare module scores
+CompareModuleScores <- function(seurat_object, meta_data, module) {
+    
+    scores_df <- seurat_object@meta.data %>% dplyr::select(sample, treatment_stage, module)
+    
+    # Calculate average module scores per patient
+    scores_df <- scores_df %>% 
+        group_by(sample, treatment_stage) %>% 
+        summarise(mean_score = mean(!!sym(module)))
+    
+
+    # Add patient id to a new column
+    scores_df <- scores_df %>% mutate(patient_id = substr(x = sample, start = 1, stop = 4))
+
+    # Add PFI_category
+    scores_df$PFI_category <- NA
+    scores_df$PFI_category <- clinical_data[match(scores_df$patient_id, clinical_data$patient_code), ]$PFI_category
+
+    # Rename values in columns "treatment_stage" and "PFI_category
+    scores_df[scores_df$treatment_stage == "chemo-naive", ]$treatment_stage <- "Chemo-naive"
+    scores_df[scores_df$PFI_category == "long", ]$PFI_category <- "Long"
+    scores_df[scores_df$PFI_category == "short", ]$PFI_category <- "Short"
+    
+    # y axis label
+    module_name <- gsub(pattern = "_.*", replacement = "", x = module)
+    y_label <- paste0("Mean ", module_name, " module score in macrophages")
+    
+    # Box plot
+    tmp_plot  <- scores_df %>% 
+        ggboxplot(x = "PFI_category", 
+                  y = "mean_score", 
+              ggtheme = theme_bw(), 
+              fill = "PFI_category", 
+              palette = c("#EE964B","#F95738"), 
+              add = "jitter",
+              xlab = "PFI category" ,
+              ylab = y_label, 
+              facet.by = "treatment_stage") + 
+    geom_pwc(method = "wilcox_test", label = "p = {p}") + 
+    scale_y_continuous(breaks = get_breaks(by = 0.2, from = 0), limits = c(0, 0.8)) +
+    theme(axis.text.x = element_blank(),
+          axis.text.y = element_text(size = 12),
+          axis.title.x = element_text(face = "bold", size = 14),
+          axis.title.y = element_text(face = "bold", size = 14), 
+          legend.text = element_text(size = 12), 
+          legend.title = element_text(face = "bold", size = 14),
+          strip.text.x = element_text(size = 12, face = "bold"))
+    
+    return(tmp_plot)
+    
+}
+```
+
+```{r box plot ITGAX}
+# Box plots ITGAX module scores
+ITGAX_pfi <- CompareModuleScores(seurat_object = seurat_macrophage, meta_data = clinical_data, module = "ITGAX_UCell") + 
+    scale_y_continuous(breaks = get_breaks(by = 0.2, from = 0), limits = c(0, 0.6))
+
+# Save plot
+ggsave(filename = "boxplot_ITGAX_module_score_pfi_category.pdf", 
+       plot = ITGAX_pfi, 
+       path = "../outputs/plots/", 
+       width = 8, 
+       height = 5)
+
+```
+
+```{r box plot CD163}
+# Box plots CD163 module scores
+CD163_pfi <- CompareModuleScores(seurat_object = seurat_macrophage, meta_data = clinical_data, module = "CD163_UCell")
+
+# Save plot
+ggsave(filename = "boxplot_CD163_module_score_pfi_category.pdf", 
+       plot = CD163_pfi, 
+       path = "../outputs/plots/", 
+       width = 8, 
+       height = 5)
+
+```
+
+```{r}
+sessionInfo()
+```
